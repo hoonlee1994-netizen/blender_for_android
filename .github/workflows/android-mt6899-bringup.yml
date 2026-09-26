@@ -16,14 +16,17 @@ on:
   workflow_dispatch:
 
 env:
-  BUILD_BASE: ${{ github.workspace }}/../blender_build_android
-  ANDROID_HOME: ${{ github.workspace }}/../android-sdk
+  # Canonical runner-local roots: actions/cache rejects literal "..", so never
+  # use ${{ github.workspace }}/../... here. runner.temp is absolute with no
+  # "." or ".." components.
+  BUILD_BASE: ${{ runner.temp }}/blender_build_android
+  ANDROID_HOME: ${{ runner.temp }}/android-sdk
   JAVA_HOME: /usr/lib/jvm/temurin-17-jdk-amd64
   # Pin the repository-intended NDK at workflow level so the runner's
   # pre-existing ANDROID_NDK_ROOT (.../27.3.13750724) cannot override env.sh.
   ANDROID_NDK_VERSION: 28.2.13676358
-  ANDROID_NDK_ROOT: ${{ github.workspace }}/../android-sdk/ndk/28.2.13676358
-  ANDROID_NDK_HOME: ${{ github.workspace }}/../android-sdk/ndk/28.2.13676358
+  ANDROID_NDK_ROOT: ${{ runner.temp }}/android-sdk/ndk/28.2.13676358
+  ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/28.2.13676358
 
 jobs:
   build-full-arm64:
@@ -67,6 +70,37 @@ jobs:
           yes | sdkmanager --licenses >/dev/null
           sdkmanager "ndk;28.2.13676358" "platform-tools" "build-tools;35.0.1" "platforms;android-35"
 
+      - name: Preflight canonical BUILD_BASE (cheap cache-path guard)
+        run: |
+          echo "BUILD_BASE=$BUILD_BASE"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          for v in "$BUILD_BASE" "$ANDROID_HOME" "$ANDROID_NDK_ROOT"; do
+            case "$v" in
+              *"/../"*|*"/./"*)
+                echo "::error::Non-canonical path rejected by actions/cache: $v"
+                exit 1
+                ;;
+            esac
+            # Trailing "/." or "/.." or bare "." / ".." components.
+            case "$v" in
+              */. | */.. | . | ..) echo "::error::Unresolved relative component: $v"; exit 1 ;;
+            esac
+          done
+          # actions/cache also rejects literal ".." anywhere in the path string.
+          if printf '%s\n' "$BUILD_BASE" "$ANDROID_HOME" "$ANDROID_NDK_ROOT" | grep -qF '..'; then
+            echo "::error::Path contains '..' literal rejected by actions/cache"
+            exit 1
+          fi
+          CANON="$(python3 -c 'import os; print(os.path.realpath(os.environ["BUILD_BASE"]))')"
+          echo "Canonical BUILD_BASE: $CANON"
+          if [ "$CANON" != "$BUILD_BASE" ]; then
+            echo "::error::BUILD_BASE is not canonical (realpath=$CANON). Fix env before the expensive build."
+            exit 1
+          fi
+          mkdir -p "$BUILD_BASE"
+          echo "Preflight OK: BUILD_BASE is canonical with no '..'."
+
       - name: Resolve dependency cache identity
         id: deps-key
         run: |
@@ -95,16 +129,22 @@ jobs:
           key: ${{ steps.deps-key.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ${{ steps.deps-key.outputs.prefix }}
 
-      - name: Fail fast if dependency checkpoint missing (recovery guard)
+      - name: Report cache restore result (single authorized rebuild gate)
         run: |
-          if [ -z "${{ steps.deps-cache.outputs.cache-matched-key }}" ]; then
-            echo "::error::No compatible Android dependency checkpoint restored (prefix '${{ steps.deps-key.outputs.prefix }}'). Refusing fresh 70-dependency rebuild in this recovery run."
-            exit 1
+          echo "Requested primary key: ${{ steps.deps-cache.outputs.cache-primary-key }}"
+          echo "Matched key: ${{ steps.deps-cache.outputs.cache-matched-key }}"
+          echo "Cache hit (exact key): ${{ steps.deps-cache.outputs.cache-hit }}"
+          if [ -n "${{ steps.deps-cache.outputs.cache-matched-key }}" ]; then
+            echo "CACHE RESTORED: reusing checkpoint '${{ steps.deps-cache.outputs.cache-matched-key }}'. Skipping dependency rebuild."
+          else
+            echo "CACHE MISS: no compatible checkpoint for prefix '${{ steps.deps-key.outputs.prefix }}'."
+            echo "ONE authorized cold rebuild is starting now (BLENDER-ANDROID-CACHE-RECOVERY.v1)."
+            echo "Future runs must reuse the checkpoint saved by this run instead of rebuilding."
           fi
-          echo "Restored dependency checkpoint: ${{ steps.deps-cache.outputs.cache-matched-key }}"
 
       - name: Cross-compile dependency prefix (one-time cost, hours)
         id: deps
+        if: steps.deps-cache.outputs.cache-matched-key == ''
         run: |
           set -o pipefail
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
@@ -131,6 +171,7 @@ jobs:
           fi
 
       - name: Save dependency checkpoint (including OpenPGL failure)
+        id: deps-save
         if: ${{ always() && steps.checkpoint.outputs.ready == 'true' }}
         uses: actions/cache/save@v4
         with:
@@ -139,6 +180,41 @@ jobs:
             ${{ env.BUILD_BASE }}/android_deps_build/host
           # Caches are immutable: each attempt must be able to save progress.
           key: ${{ steps.deps-cache.outputs.cache-primary-key }}
+
+      - name: Verify dependency cache persistence (fatal on save failure)
+        if: steps.deps-cache.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SAVE_OUTCOME='${{ steps.deps-save.outcome }}'
+          echo "Save step outcome: $SAVE_OUTCOME"
+          if [ "$SAVE_OUTCOME" != "success" ]; then
+            echo "::error::Dependency cache save did not succeed (outcome=$SAVE_OUTCOME). STOPPING before host-codegen/Full APK so the expensive result is not lost again."
+            exit 1
+          fi
+          SAVE_KEY='${{ steps.deps-cache.outputs.cache-primary-key }}'
+          echo "Exact cache key: $SAVE_KEY"
+          echo "Canonical cached paths:"
+          echo "  $BUILD_BASE/lib/android_arm64"
+          echo "  $BUILD_BASE/android_deps_build/host"
+          test -d "$BUILD_BASE/lib/android_arm64" || { echo "::error::Missing $BUILD_BASE/lib/android_arm64 after build"; exit 1; }
+          test -d "$BUILD_BASE/android_deps_build/host" || { echo "::error::Missing $BUILD_BASE/android_deps_build/host after build"; exit 1; }
+          echo "--- prefix sizes ---"
+          du -sh "$BUILD_BASE/lib/android_arm64" "$BUILD_BASE/android_deps_build/host" 2>&1 || true
+          echo "--- archive contents (top level) ---"
+          ls "$BUILD_BASE/lib/android_arm64" | head -n 40
+          # Positive server-side evidence that a usable cache was created.
+          echo "--- gh cache list (server-side proof) ---"
+          gh cache list --limit 50 2>&1 | tee /tmp/gh-cache-list.txt || { echo "::error::'gh cache list' failed; cannot prove persistence"; exit 1; }
+          if ! grep -qF "$SAVE_KEY" /tmp/gh-cache-list.txt; then
+            echo "::group::Full gh cache list (JSON)"
+            gh cache list --json key,ref,sizeInBytes,createdAt --limit 50 2>&1 || true
+            echo "::endgroup::"
+            echo "::error::Saved cache key not found server-side: $SAVE_KEY. STOPPING before Full APK."
+            exit 1
+          fi
+          echo "Cache persistence VERIFIED for key: $SAVE_KEY"
 
       - name: Dump TBB/OpenPGL prefix layout (diagnostic, always runs)
         if: always()
@@ -157,6 +233,16 @@ jobs:
           test -n "$(ls -A lib/linux_x64)" || { echo "::error::lib/linux_x64 is empty after make_update"; exit 1; }
           find lib/linux_x64 -maxdepth 4 -name jpeglib.h | grep -q . || { echo "::error::host JPEG include (jpeglib.h) not found under lib/linux_x64"; exit 1; }
           echo "Host precompiled bundle OK:"; ls lib/linux_x64 | head -n 30
+
+      - name: Verify effective NDK 28.2.13676358 + toolchain file
+        run: |
+          source build_files/android/env.sh
+          echo "Effective NDK root: $ANDROID_NDK_ROOT"
+          NDK_REVISION=$(sed -n 's/^Pkg.Revision *= *//p' "$ANDROID_NDK_ROOT/source.properties")
+          echo "Effective NDK revision: $NDK_REVISION"
+          test "$NDK_REVISION" = "28.2.13676358" || { echo "::error::Effective NDK is $NDK_REVISION, expected 28.2.13676358"; exit 1; }
+          test -f "$ANDROID_TOOLCHAIN_FILE" || { echo "::error::Toolchain file missing: $ANDROID_TOOLCHAIN_FILE"; exit 1; }
+          echo "NDK OK: $NDK_REVISION at $ANDROID_NDK_ROOT"
 
       - name: Build Full APK (arm64-v8a)
         run: |
