@@ -16,17 +16,17 @@ on:
   workflow_dispatch:
 
 env:
-  # Canonical runner-local roots: actions/cache rejects literal "..", so never
-  # use ${{ github.workspace }}/../... here. runner.temp is absolute with no
-  # "." or ".." components.
-  BUILD_BASE: ${{ runner.temp }}/blender_build_android
-  ANDROID_HOME: ${{ runner.temp }}/android-sdk
+  # Canonical workspace-local roots: workflow-level env cannot use the
+  # runner/job context (runner.temp), so anchor under github.workspace.
+  # Absolute after expansion, no "..", valid before any job exists.
+  BUILD_BASE: ${{ github.workspace }}/.ci-build/blender_build_android
+  ANDROID_HOME: ${{ github.workspace }}/.ci-build/android-sdk
   JAVA_HOME: /usr/lib/jvm/temurin-17-jdk-amd64
   # Pin the repository-intended NDK at workflow level so the runner's
   # pre-existing ANDROID_NDK_ROOT (.../27.3.13750724) cannot override env.sh.
   ANDROID_NDK_VERSION: 28.2.13676358
-  ANDROID_NDK_ROOT: ${{ runner.temp }}/android-sdk/ndk/28.2.13676358
-  ANDROID_NDK_HOME: ${{ runner.temp }}/android-sdk/ndk/28.2.13676358
+  ANDROID_NDK_ROOT: ${{ github.workspace }}/.ci-build/android-sdk/ndk/28.2.13676358
+  ANDROID_NDK_HOME: ${{ github.workspace }}/.ci-build/android-sdk/ndk/28.2.13676358
 
 jobs:
   build-full-arm64:
