@@ -1,0 +1,89 @@
+# Android MT6899/Mali-G720 bring-up build (arm64-v8a, Full).
+#
+# Minimal CI for the dedicated bring-up branch ONLY. Follows the repository's
+# documented flow (build_files/android/BUILDING.md + ANDROID_AI_GUIDE.md):
+# cross-compile the dependency prefix, then `build.py full`.
+#
+# MUST run on x86_64 Linux: the Android NDK ships x86_64-only host binaries,
+# and the host code generators (makesdna/makesrna/...) build natively.
+# Triggered only by pushes to the bring-up branch (never the default branch).
+
+name: android-mt6899-bringup
+
+on:
+  push:
+    branches: [mt6899-mali-g720-bringup-v1]
+  workflow_dispatch:
+
+env:
+  BUILD_BASE: ${{ github.workspace }}/../blender_build_android
+  ANDROID_HOME: ${{ github.workspace }}/../android-sdk
+  JAVA_HOME: /usr/lib/jvm/temurin-17-jdk-amd64
+
+jobs:
+  build-full-arm64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout bring-up branch (with submodules + LFS)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Host Python 3.13 (drives the numpy cross-build)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: JDK 17 (APK tooling)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Host toolchain (GCC 14+, CMake 3.26+, ninja, meson, ...)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            gcc-14 g++-14 cmake ninja-build meson pkgconf patchelf git-lfs \
+            automake autoconf autoconf-archive libtool python3-dev bison flex \
+            unzip zip curl ca-certificates
+          git lfs install --local
+
+      - name: Android SDK (cmdline-tools, NDK 28.2.13676358 per env.sh)
+        run: |
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          curl -fL -o /tmp/cmdtools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"
+          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "ndk;28.2.13676358" "platform-tools" "build-tools;35.0.1" "platforms;android-35"
+
+      - name: Cross-compile dependency prefix (one-time cost, hours)
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          build_files/android/deps/build.sh all
+
+      - name: Build Full APK (arm64-v8a)
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          python3 build_files/android/build.py full --build-base "$BUILD_BASE"
+
+      - name: Record APK identity
+        run: |
+          ls -lh "$BUILD_BASE/apk"
+          APK=$(ls -t "$BUILD_BASE"/apk/*.apk | head -n 1)
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          sha256sum "$APK" | tee "$BUILD_BASE/apk/SHA256SUMS.txt"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-android-full-mt6899
+          path: |
+            ${{ env.BUILD_BASE }}/apk/*.apk
+            ${{ env.BUILD_BASE }}/apk/SHA256SUMS.txt
+          if-no-files-found: error

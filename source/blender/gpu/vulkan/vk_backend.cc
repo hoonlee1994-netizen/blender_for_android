@@ -165,39 +165,42 @@ static Vector<StringRefNull> missing_capabilities_get(VkPhysicalDevice vk_physic
 
   vkGetPhysicalDeviceFeatures2(vk_physical_device, &features);
 
+  /* Shared minimum-feature decision with GHOST device selection. Bits that stay set here
+   * keep their historical log strings below. */
+  const uint32_t missing_minimum = GPU_vulkan_missing_minimum_features(features.features,
+                                                                       features_11);
 #ifndef __APPLE__
   /* Features currently not supported by Mesa KosmicKrisp. */
-  if (features.features.geometryShader == VK_FALSE) {
+  if (missing_minimum & uint32_t(GPUVulkanMinimumFeature::GeometryShader)) {
     missing_capabilities.append("geometry shaders");
   }
 #endif
-  if (features.features.vertexPipelineStoresAndAtomics == VK_FALSE) {
-    missing_capabilities.append("vertex pipeline stores and atomics");
-  }
+  /* vertexPipelineStoresAndAtomics and shaderClipDistance are not hard requirements: startup
+   * draw shaders only read storage buffers in the vertex stage (stores/atomics need the
+   * feature, reads do not), and clip distance is only declared when viewport clipping planes
+   * are enabled. Requiring them excludes otherwise-capable mobile GPUs (ARM Mali-G720
+   * reports neither). Keep in sync with GPU_vulkan_missing_minimum_features(). */
   /* multiViewport, logicOp and provoking-vertex are not hard requirements: the
    * backend already treats logic_ops as optional, the framebuffer falls back to a
    * single viewport, and provoking vertex only affects the flat-shading vertex
    * convention. Requiring them excludes otherwise-capable mobile GPUs (all Adreno
    * lack logicOp), so they are not rejected here. */
-  if (features.features.shaderClipDistance == VK_FALSE) {
-    missing_capabilities.append("shader clip distance");
-  }
-  if (features.features.fragmentStoresAndAtomics == VK_FALSE) {
+  if (missing_minimum & uint32_t(GPUVulkanMinimumFeature::FragmentStoresAndAtomics)) {
     missing_capabilities.append("fragment stores and atomics");
   }
-  if (features.features.dualSrcBlend == VK_FALSE) {
+  if (missing_minimum & uint32_t(GPUVulkanMinimumFeature::DualSrcBlend)) {
     missing_capabilities.append("dual source blending");
   }
-  if (features.features.imageCubeArray == VK_FALSE) {
+  if (missing_minimum & uint32_t(GPUVulkanMinimumFeature::ImageCubeArray)) {
     missing_capabilities.append("image cube array");
   }
-  if (features.features.multiDrawIndirect == VK_FALSE) {
+  if (missing_minimum & uint32_t(GPUVulkanMinimumFeature::MultiDrawIndirect)) {
     missing_capabilities.append("multi draw indirect");
   }
   if (features.features.drawIndirectFirstInstance == VK_FALSE) {
     missing_capabilities.append("draw indirect first instance");
   }
-  if (features_11.shaderDrawParameters == VK_FALSE) {
+  if (missing_minimum & uint32_t(GPUVulkanMinimumFeature::ShaderDrawParameters)) {
     missing_capabilities.append("shader draw parameters");
   }
   if (features_12.timelineSemaphore == VK_FALSE) {

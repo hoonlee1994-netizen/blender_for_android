@@ -465,21 +465,14 @@ struct GHOST_InstanceVK {
         continue;
       }
 
-      if (
-#ifndef __APPLE__
-          !device_vk.features.features.geometryShader ||
-#endif
-          !device_vk.features.features.vertexPipelineStoresAndAtomics ||
-          !device_vk.features.features.shaderClipDistance ||
-          !device_vk.features.features.fragmentStoresAndAtomics ||
-          !device_vk.features.features.multiDrawIndirect ||
-          !device_vk.features.features.imageCubeArray ||
-          !device_vk.features.features.dualSrcBlend ||
-          !device_vk.features.features.imageCubeArray)
+      if (blender::gpu::GPU_vulkan_missing_minimum_features(device_vk.features.features,
+                                                              device_vk.features_11) != 0)
       {
         /* multiViewport and logicOp are intentionally not required: they are
          * unavailable on many mobile GPUs (all Adreno lack logicOp) and the
-         * Vulkan backend treats them as optional. */
+         * Vulkan backend treats them as optional. vertexPipelineStoresAndAtomics
+         * and shaderClipDistance are likewise optional (ARM Mali-G720 reports
+         * neither); see GPU_vulkan_missing_minimum_features(). */
         continue;
       }
 
@@ -646,11 +639,15 @@ struct GHOST_InstanceVK {
 #ifndef __APPLE__
     device_features.geometryShader = VK_TRUE;
 #endif
-    device_features.vertexPipelineStoresAndAtomics = VK_TRUE;
+    /* vertexPipelineStoresAndAtomics and shaderClipDistance are optional on mobile GPUs;
+     * only enable when supported (else vkCreateDevice fails with
+     * VK_ERROR_FEATURE_NOT_PRESENT). ARM Mali-G720 reports neither. */
+    device_features.vertexPipelineStoresAndAtomics =
+        device.features.features.vertexPipelineStoresAndAtomics;
     /* Optional on mobile GPUs; only enable when supported (else vkCreateDevice
      * fails with VK_ERROR_FEATURE_NOT_PRESENT). */
     device_features.multiViewport = device.features.features.multiViewport;
-    device_features.shaderClipDistance = VK_TRUE;
+    device_features.shaderClipDistance = device.features.features.shaderClipDistance;
     device_features.fragmentStoresAndAtomics = VK_TRUE;
     device_features.logicOp = device.features.features.logicOp;
     device_features.dualSrcBlend = VK_TRUE;
