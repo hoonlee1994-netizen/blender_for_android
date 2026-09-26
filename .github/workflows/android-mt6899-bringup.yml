@@ -19,6 +19,11 @@ env:
   BUILD_BASE: ${{ github.workspace }}/../blender_build_android
   ANDROID_HOME: ${{ github.workspace }}/../android-sdk
   JAVA_HOME: /usr/lib/jvm/temurin-17-jdk-amd64
+  # Pin the repository-intended NDK at workflow level so the runner's
+  # pre-existing ANDROID_NDK_ROOT (.../27.3.13750724) cannot override env.sh.
+  ANDROID_NDK_VERSION: 28.2.13676358
+  ANDROID_NDK_ROOT: ${{ github.workspace }}/../android-sdk/ndk/28.2.13676358
+  ANDROID_NDK_HOME: ${{ github.workspace }}/../android-sdk/ndk/28.2.13676358
 
 jobs:
   build-full-arm64:

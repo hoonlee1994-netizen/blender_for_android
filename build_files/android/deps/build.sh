@@ -105,7 +105,11 @@ fetch() {
   local file="$1" url="$2"
   if [ ! -f "$DL_DIR/$file" ]; then
     echo "[deps] fetching $file"
-    curl -sL --max-time 300 -o "$DL_DIR/$file" "$url"
+    rm -f "$DL_DIR/$file.part"
+    curl --fail --show-error --location --retry 5 --retry-all-errors \
+      --retry-delay 5 --connect-timeout 30 --max-time 300 \
+      -o "$DL_DIR/$file.part" "$url"
+    mv "$DL_DIR/$file.part" "$DL_DIR/$file"
   fi
 }
 

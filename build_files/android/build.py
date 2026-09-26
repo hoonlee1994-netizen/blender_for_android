@@ -262,7 +262,7 @@ def build(config: str, repackage: bool = False, debuggable: bool = False,
 
     if reconfigure or not configured:
         print("[build] path: full (configure + compile + package)")
-        sh(f"{env}'{SCRIPT_DIR / 'build_apk.sh'}' {config}")
+        sh(f"{env}bash '{SCRIPT_DIR / 'build_apk.sh'}' {config}")
     elif repackage or not staged:
         print("[build] path: compile + repackage (no reconfigure)")
         # env.sh, not just ninja: the host code generators run during this build
@@ -273,7 +273,7 @@ def build(config: str, repackage: bool = False, debuggable: bool = False,
     else:
         print("[build] path: fast (compile + swap libblender.so)")
         # fastdeploy installs and launches at the end; build.py owns that.
-        sh(f"{env}FASTDEPLOY_NO_INSTALL=1 '{SCRIPT_DIR / 'fastdeploy.sh'}' {config}")
+        sh(f"{env}FASTDEPLOY_NO_INSTALL=1 bash '{SCRIPT_DIR / 'fastdeploy.sh'}' {config}")
 
 
 def fetch_validation_layer() -> Path:
