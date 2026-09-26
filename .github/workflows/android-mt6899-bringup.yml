@@ -62,22 +62,70 @@ jobs:
           yes | sdkmanager --licenses >/dev/null
           sdkmanager "ndk;28.2.13676358" "platform-tools" "build-tools;35.0.1" "platforms;android-35"
 
+      - name: Resolve dependency cache identity
+        id: deps-key
+        run: |
+          source build_files/android/env.sh
+          # env.sh honours the runner's NDK override; key the actual compiler,
+          # not the version merely installed by sdkmanager above.
+          NDK_REVISION=$(sed -n 's/^Pkg.Revision *= *//p' "$ANDROID_NDK_ROOT/source.properties")
+          test -n "$NDK_REVISION"
+          echo "Effective NDK: $ANDROID_NDK_ROOT ($NDK_REVISION)"
+          # OpenPGL is always rebuilt below, so repairs to that final recipe
+          # can reuse the preceding 69 dependencies. All other recipes count.
+          DEPS_HASH=$({
+            sed '/^build_openpgl() {/,/^}/d' build_files/android/deps/build.sh
+            cat build_files/android/env.sh build_files/build_environment/cmake/versions.cmake
+          } | sha256sum | cut -d ' ' -f 1)
+          echo "prefix=android-deps-v2-${{ runner.os }}-${{ runner.arch }}-${ANDROID_ABI}-api${ANDROID_API}-ndk${NDK_REVISION}-${DEPS_HASH}-" >> "$GITHUB_OUTPUT"
+
       - name: Restore dependency prefix cache
-        uses: actions/cache@v4
+        id: deps-cache
+        uses: actions/cache/restore@v4
         with:
-          # build.sh skips any dependency whose install dir already has
-          # content, so a restored prefix resumes instead of rebuilding.
-          path: ${{ env.BUILD_BASE }}/lib/android_arm64
-          key: android-deps-${{ runner.os }}-${{ hashFiles('build_files/android/deps/build.sh', 'build_files/build_environment/cmake/versions.cmake') }}
-          restore-keys: android-deps-${{ runner.os }}-
+          # ISPC is a host dependency outside the target prefix.
+          path: |
+            ${{ env.BUILD_BASE }}/lib/android_arm64
+            ${{ env.BUILD_BASE }}/android_deps_build/host
+          key: ${{ steps.deps-key.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ steps.deps-key.outputs.prefix }}
 
       - name: Cross-compile dependency prefix (one-time cost, hours)
+        id: deps
         run: |
+          set -o pipefail
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          mkdir -p "$BUILD_BASE"
+          # Never mistake a cached or partially installed OpenPGL for the
+          # current recipe. Preserve every other dependency's install dir.
+          rm -rf "$BUILD_BASE/lib/android_arm64/openpgl"
           # build.sh is stored non-executable upstream (mode 100644); the repo
           # itself invokes its shell scripts via `bash` (see build.py), so do
           # the same instead of executing the file directly.
-          bash build_files/android/deps/build.sh all
+          bash build_files/android/deps/build.sh all 2>&1 | tee "$BUILD_BASE/deps.log"
+
+      - name: Prepare dependency checkpoint
+        id: checkpoint
+        if: ${{ always() && steps.deps.outcome != 'skipped' }}
+        run: |
+          if [ '${{ steps.deps.outcome }}' = success ]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          elif grep -Eq '^=== \[[0-9]+/[0-9]+\] building: openpgl ===$' "$BUILD_BASE/deps.log"; then
+            # Reaching the final dependency proves that the preceding prefix
+            # completed. Discard only the failed OpenPGL installation.
+            rm -rf "$BUILD_BASE/lib/android_arm64/openpgl"
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save dependency checkpoint (including OpenPGL failure)
+        if: ${{ always() && steps.checkpoint.outputs.ready == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.BUILD_BASE }}/lib/android_arm64
+            ${{ env.BUILD_BASE }}/android_deps_build/host
+          # Caches are immutable: each attempt must be able to save progress.
+          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
 
       - name: Dump TBB/OpenPGL prefix layout (diagnostic, always runs)
         if: always()

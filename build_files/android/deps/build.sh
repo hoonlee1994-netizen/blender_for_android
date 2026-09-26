@@ -1331,7 +1331,10 @@ build_openpgl() {
   fetch "openpgl-$v.tar.gz" \
     "https://github.com/OpenPathGuidingLibrary/openpgl/archive/refs/tags/$v.tar.gz"
   local src; src="$(extract "openpgl-$v.tar.gz" openpgl)"
+  # Use oneTBB's exported targets. OpenPGL's bundled FindTBB ignores TBB_DIR
+  # and can re-root normalized library paths under an unnormalized find root.
   cmake_install "$src" openpgl \
+    -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON \
     -DOPENPGL_BUILD_STATIC=ON \
     -DOPENPGL_BUILD_PYTHON=OFF \
     -DOPENPGL_BUILD_TOOLS=OFF \
