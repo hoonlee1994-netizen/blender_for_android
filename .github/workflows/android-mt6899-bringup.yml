@@ -62,6 +62,15 @@ jobs:
           yes | sdkmanager --licenses >/dev/null
           sdkmanager "ndk;28.2.13676358" "platform-tools" "build-tools;35.0.1" "platforms;android-35"
 
+      - name: Restore dependency prefix cache
+        uses: actions/cache@v4
+        with:
+          # build.sh skips any dependency whose install dir already has
+          # content, so a restored prefix resumes instead of rebuilding.
+          path: ${{ env.BUILD_BASE }}/lib/android_arm64
+          key: android-deps-${{ runner.os }}-${{ hashFiles('build_files/android/deps/build.sh', 'build_files/build_environment/cmake/versions.cmake') }}
+          restore-keys: android-deps-${{ runner.os }}-
+
       - name: Cross-compile dependency prefix (one-time cost, hours)
         run: |
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
@@ -69,6 +78,16 @@ jobs:
           # itself invokes its shell scripts via `bash` (see build.py), so do
           # the same instead of executing the file directly.
           bash build_files/android/deps/build.sh all
+
+      - name: Dump TBB/OpenPGL prefix layout (diagnostic, always runs)
+        if: always()
+        run: |
+          echo "--- TBB prefix ---"
+          ls -R "${BUILD_BASE}/lib/android_arm64/tbb/lib" 2>&1 | head -n 40
+          echo "--- TBB cmake config dir (OpenPGL TBB_DIR target) ---"
+          ls -la "${BUILD_BASE}/lib/android_arm64/tbb/lib/cmake/TBB" 2>&1
+          echo "--- openpgl prefix present? ---"
+          ls "${BUILD_BASE}/lib/android_arm64/openpgl" 2>&1 || true
 
       - name: Build Full APK (arm64-v8a)
         run: |
