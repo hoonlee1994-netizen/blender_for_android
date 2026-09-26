@@ -65,7 +65,10 @@ jobs:
       - name: Cross-compile dependency prefix (one-time cost, hours)
         run: |
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-          build_files/android/deps/build.sh all
+          # build.sh is stored non-executable upstream (mode 100644); the repo
+          # itself invokes its shell scripts via `bash` (see build.py), so do
+          # the same instead of executing the file directly.
+          bash build_files/android/deps/build.sh all
 
       - name: Build Full APK (arm64-v8a)
         run: |
