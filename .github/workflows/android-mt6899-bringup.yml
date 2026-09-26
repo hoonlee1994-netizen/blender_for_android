@@ -95,6 +95,14 @@ jobs:
           key: ${{ steps.deps-key.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ${{ steps.deps-key.outputs.prefix }}
 
+      - name: Fail fast if dependency checkpoint missing (recovery guard)
+        run: |
+          if [ -z "${{ steps.deps-cache.outputs.cache-matched-key }}" ]; then
+            echo "::error::No compatible Android dependency checkpoint restored (prefix '${{ steps.deps-key.outputs.prefix }}'). Refusing fresh 70-dependency rebuild in this recovery run."
+            exit 1
+          fi
+          echo "Restored dependency checkpoint: ${{ steps.deps-cache.outputs.cache-matched-key }}"
+
       - name: Cross-compile dependency prefix (one-time cost, hours)
         id: deps
         run: |
@@ -141,6 +149,14 @@ jobs:
           ls -la "${BUILD_BASE}/lib/android_arm64/tbb/lib/cmake/TBB" 2>&1
           echo "--- openpgl prefix present? ---"
           ls "${BUILD_BASE}/lib/android_arm64/openpgl" 2>&1 || true
+
+      - name: Populate native Linux host precompiled libraries (host codegen)
+        run: |
+          python3 build_files/utils/make_update.py --no-blender --architecture x86_64
+          test -d lib/linux_x64 || { echo "::error::lib/linux_x64 missing after make_update"; exit 1; }
+          test -n "$(ls -A lib/linux_x64)" || { echo "::error::lib/linux_x64 is empty after make_update"; exit 1; }
+          find lib/linux_x64 -maxdepth 4 -name jpeglib.h | grep -q . || { echo "::error::host JPEG include (jpeglib.h) not found under lib/linux_x64"; exit 1; }
+          echo "Host precompiled bundle OK:"; ls lib/linux_x64 | head -n 30
 
       - name: Build Full APK (arm64-v8a)
         run: |

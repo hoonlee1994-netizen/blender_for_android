@@ -15,9 +15,9 @@ case "$CONFIG" in lite|full) ;; *) echo "usage: $0 [lite|full]" >&2; exit 1;; es
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# Drop any leaked Android Studio SDK/NDK paths so env.sh picks the Homebrew ones
-# (Studio's SDK lacks our build-tools/NDK version).
-unset ANDROID_HOME ANDROID_NDK_ROOT ANDROID_NDK_HOME
+# Preserve caller-provided ANDROID_HOME/ANDROID_NDK_ROOT/ANDROID_NDK_HOME.
+# CI supplies the pinned NDK 28.2 path; env.sh already falls back to defaults
+# when they are genuinely unset.
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/env.sh"
 cd "$REPO_ROOT"
