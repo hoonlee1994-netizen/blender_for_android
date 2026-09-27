@@ -21,10 +21,30 @@ config file enables it. Host tooling creates the file before launch:
 
 Absent / disabled / malformed config -> no server, with a clear log line.
 The token is required on every request and is never logged.
+
+Trusted script execution ("script.execute") is OFF by default and requires a
+second explicit opt-in in the same config file:
+
+    {"enabled": true, "token": "...", "port": 17878,
+     "allow_script_execution": true}
+
+absent / false / malformed flag -> script execution disabled (FORBIDDEN);
+ordinary semantic methods keep working regardless. No second token or port.
+
+TRUST MODEL: enabling script execution grants the authenticated local
+controller trusted Python execution inside Blender's process, with the same
+operating-system access available to Blender's bundled Python runtime.
+This is NOT a sandbox: "os", "subprocess", filesystem and network access from
+inside Blender's process cannot be meaningfully restricted, and no attempt is
+made to do so. The security boundary is: bind to 127.0.0.1 only, mandatory
+high-entropy token on every request, execution OFF unless explicitly opted
+in. Only a user-controlled local agent holding the token may invoke it.
 """
 
+import contextlib
 import hashlib
 import hmac
+import io
 import json
 import math
 import os
@@ -32,6 +52,7 @@ import queue
 import socket
 import sys
 import threading
+import time
 import traceback
 
 __all__ = (
@@ -49,7 +70,7 @@ CONFIG_ENV_OVERRIDE = "BLENDER_CONTROL_CONFIG"
 CONFIG_DEFAULT_PATH = "/storage/emulated/0/Download/blender-control.json"
 DEBUG_ENV = "BLENDER_CONTROL_DEBUG"
 
-MAX_REQUEST_BYTES = 64 * 1024
+MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
 QUEUE_MAXSIZE = 32
 MAX_DRAIN_PER_TICK = 4
@@ -58,7 +79,14 @@ ACCEPT_POLL_TIMEOUT = 0.5
 SOCKET_RECV_TIMEOUT = 60.0
 DEFAULT_WAIT_TIMEOUT = 20.0
 RENDER_WAIT_TIMEOUT = 180.0
+SCRIPT_WAIT_TIMEOUT = 300.0
 MIN_TOKEN_LENGTH = 16
+
+# Bounds for the trusted "script.execute" path (v1, no job scheduler).
+SCRIPT_MAX_SOURCE_BYTES = 256 * 1024  # UTF-8 bytes of the "source" param
+SCRIPT_MAX_LABEL_CHARS = 256
+STDOUT_MAX_CHARS = 16 * 1024
+TRACEBACK_MAX_CHARS = 4 * 1024
 
 ALLOWED_CREATE_TYPES = ("CUBE", "UV_SPHERE")
 ALLOWED_RENDER_ENGINES = ("BLENDER_EEVEE",)
@@ -113,7 +141,11 @@ def _load_config():
     if not isinstance(port, int) or not (1024 <= port <= 65535):
         _log("config at %s has invalid port; bridge disabled" % path)
         return None, "disabled (bad port)"
-    return {"token": token, "port": port, "path": path}, "enabled"
+    # Explicit opt-in for trusted script execution. Only boolean True
+    # enables it; absent / false / malformed all mean disabled.
+    allow_script = data.get("allow_script_execution") is True
+    return {"token": token, "port": port, "path": path,
+            "allow_script_execution": allow_script}, "enabled"
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +467,84 @@ def h_render_still(params, ctx):
     return {"engine": engine, "output": output, "width": width, "height": height}
 
 
+def h_script_execute(params, ctx):
+    """MAIN THREAD ONLY. Execute trusted local Python source via exec() in a
+    fresh namespace and return a structured result envelope.
+
+    Contract: a script may assign a top-level ``result`` variable holding
+    JSON-serializable data. Response::
+
+        {"result": ..., "stdout": "...", "duration_ms": N,
+         "source_sha256": "..."}
+
+    ``result`` is null when the script does not define it. Only bounded
+    metadata is logged (id, label, SHA-256, byte count, duration, outcome);
+    never the token, source, stdout, or file contents.
+    """
+    del ctx
+    if not isinstance(params, dict):
+        return _handler_error("INVALID_PARAMS", "params must be an object")
+    source = params.get("source")
+    if not isinstance(source, str) or not source:
+        return _handler_error(
+            "INVALID_PARAMS", "params.source (non-empty string) is required")
+    label = params.get("label")
+    if label is not None and (
+            not isinstance(label, str) or len(label) > SCRIPT_MAX_LABEL_CHARS):
+        return _handler_error(
+            "INVALID_PARAMS",
+            "params.label must be a string of at most %d characters"
+            % SCRIPT_MAX_LABEL_CHARS)
+    try:
+        source_bytes = len(source.encode("utf-8"))
+    except (UnicodeEncodeError, ValueError):
+        return _handler_error("INVALID_PARAMS", "params.source is not valid text")
+    if source_bytes > SCRIPT_MAX_SOURCE_BYTES:
+        return _handler_error(
+            "SOURCE_TOO_LARGE",
+            "source is %d bytes; limit is %d bytes"
+            % (source_bytes, SCRIPT_MAX_SOURCE_BYTES))
+    source_sha = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    # Fresh namespace per request: no implicit persistent globals.
+    namespace = {}
+    buf = io.StringIO()
+    start = time.monotonic()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            exec(source, namespace)  # noqa: S102 -- trusted opt-in path, main thread only
+    except Exception as e:
+        duration_ms = int((time.monotonic() - start) * 1000)
+        _log("script id=? label=%r sha=%s bytes=%d failed after %dms (%s)" % (
+            label, source_sha, source_bytes, duration_ms, type(e).__name__))
+        err = {"code": "EXECUTION_ERROR",
+               "message": "%s: %s" % (type(e).__name__, e)}
+        if _debug_enabled():
+            err["traceback"] = traceback.format_exc()[:TRACEBACK_MAX_CHARS]
+        return {"__error__": err}
+    duration_ms = int((time.monotonic() - start) * 1000)
+    captured = buf.getvalue()
+    truncated = len(captured) > STDOUT_MAX_CHARS
+    if truncated:
+        captured = (captured[:STDOUT_MAX_CHARS]
+                    + "\n[stdout truncated at %d chars]" % STDOUT_MAX_CHARS)
+    result = namespace.get("result", None)
+    try:
+        json.dumps(result)
+    except (TypeError, ValueError):
+        _log("script id=? label=%r sha=%s bytes=%d done in %dms "
+             "RESULT_NOT_SERIALIZABLE" % (
+                 label, source_sha, source_bytes, duration_ms))
+        return {"__error__": {
+            "code": "RESULT_NOT_SERIALIZABLE",
+            "message": ("top-level 'result' is not JSON-serializable; "
+                        "assign plain dicts/lists/strings/numbers "
+                        "instead of Blender objects")}}
+    _log("script id=? label=%r sha=%s bytes=%d done in %dms ok" % (
+        label, source_sha, source_bytes, duration_ms))
+    return {"result": result, "stdout": captured,
+            "duration_ms": duration_ms, "source_sha256": source_sha}
+
+
 def _handler_error(code, message):
     return {"__error__": {"code": code, "message": message}}
 
@@ -447,6 +557,9 @@ HANDLERS = {
     "object.delete": (h_object_delete, DEFAULT_WAIT_TIMEOUT),
     "scene.save": (h_scene_save, DEFAULT_WAIT_TIMEOUT),
     "render.still": (h_render_still, RENDER_WAIT_TIMEOUT),
+    # Trusted local execution; gated on allow_script_execution (FORBIDDEN
+    # when disabled). Runs on the same main-thread queue/timers path.
+    "script.execute": (h_script_execute, SCRIPT_WAIT_TIMEOUT),
 }
 
 FORBIDDEN_PREFIXES = ("python.", "shell.", "subprocess.", "os.", "sys.", "exec", "eval")
@@ -457,11 +570,17 @@ FORBIDDEN_PREFIXES = ("python.", "shell.", "subprocess.", "os.", "sys.", "exec",
 # ---------------------------------------------------------------------------
 
 class _Bridge:
-    def __init__(self, token, port):
+    def __init__(self, token, port, allow_script_execution=False):
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
         _log("initializing (token sha256 prefix %s...)" % token_hash)
         self._token = token
         self._port = port
+        # Strict opt-in: only boolean True enables; anything else disables.
+        self._allow_script_execution = allow_script_execution is True
+        if self._allow_script_execution:
+            _log("script execution ENABLED (trusted local bpy access)")
+        else:
+            _log("script execution disabled (default)")
         self._queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
         self._stop = threading.Event()
         self._main_ident = threading.get_ident()
@@ -598,6 +717,13 @@ class _Bridge:
         if method in ("python.eval", "python.exec") or method.startswith(FORBIDDEN_PREFIXES):
             self._send(conn, _fail(req_id, "FORBIDDEN", "method not allowed: %s" % method))
             return
+        if method == "script.execute" and not self._allow_script_execution:
+            _log("forbidden script.execute id=%r (allow_script_execution not enabled)" % (req_id,))
+            self._send(conn, _fail(
+                req_id, "FORBIDDEN",
+                "script execution is disabled; set allow_script_execution:true "
+                "in the control config and relaunch"))
+            return
         entry = HANDLERS.get(method)
         if entry is None:
             self._send(conn, _fail(req_id, "UNKNOWN_METHOD", "unknown method: %s" % method))
@@ -612,6 +738,9 @@ class _Bridge:
             return
         _log("recv method=%s id=%r" % (method, req_id))
         if not req.event.wait(timeout):
+            # NOTE: a wait timeout means the caller stops waiting. Code
+            # already executing on Blender's main thread CANNOT be safely
+            # interrupted and may run to completion; there is no rollback.
             _log("timeout method=%s id=%r" % (method, req_id))
             self._send(conn, _fail(req_id, "TIMEOUT", "request timed out"))
             return
@@ -676,6 +805,12 @@ class _Bridge:
                     info = result["__error__"]
                     req.response = _fail(req.req_id, info.get("code", "INTERNAL"),
                                          info.get("message", "handler failed"))
+                    # Propagate the debug-gated bounded traceback (e.g. from
+                    # script EXECUTION_ERROR); never the token or source.
+                    if (_debug_enabled() and isinstance(info, dict)
+                            and isinstance(info.get("traceback"), str)):
+                        req.response["error"]["traceback"] = \
+                            info["traceback"][:TRACEBACK_MAX_CHARS]
                 else:
                     req.response = _ok(req.req_id, result)
             except Exception as e:
@@ -703,7 +838,8 @@ def register():
     _log("bridge %s" % status)
     if config is None:
         return
-    bridge = _Bridge(config["token"], config["port"])
+    bridge = _Bridge(config["token"], config["port"],
+                     allow_script_execution=config.get("allow_script_execution", False))
     if bridge.start():
         _BRIDGE = bridge
         _log("bridge active; bpy executes on main thread via bpy.app.timers")

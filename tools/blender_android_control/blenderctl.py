@@ -148,6 +148,39 @@ def cmd_gen_token(_client, args):
     return 0
 
 
+def _read_exec_source(args):
+    if args.file is not None:
+        with open(args.file, "r", encoding="utf-8") as f:
+            return f.read()
+    if args.stdin:
+        return sys.stdin.read()
+    return args.source
+
+
+def cmd_exec(client, args):
+    try:
+        source = _read_exec_source(args)
+    except OSError as e:
+        print("blenderctl: cannot read script source (%s)" % e, file=sys.stderr)
+        return 1
+    if not source:
+        print("blenderctl: empty script source", file=sys.stderr)
+        return 1
+    r = _emit(args, client.script_execute(
+        source, label=args.label,
+        timeout=args.timeout if args.timeout else None))
+    if not args.json:
+        print("ok sha=%s duration_ms=%s" % (
+            r.get("source_sha256"), r.get("duration_ms")))
+        result = r.get("result")
+        if result is not None:
+            print(json.dumps(result, indent=2)[:4000])
+        if r.get("stdout"):
+            print("--- script stdout (bounded) ---")
+            print(r["stdout"][:4000])
+    return 0
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="blenderctl",
                                 description="Control Blender on Android over localhost RPC")
@@ -188,6 +221,20 @@ def build_parser():
     r.add_argument("--resolution", default=(256, 256), type=_parse_resolution)
     r.add_argument("--percentage", default=100, type=int)
 
+    e = sub.add_parser("exec", help="run trusted bpy Python on Blender's main thread "
+                                    "(requires allow_script_execution:true)")
+    src = e.add_mutually_exclusive_group(required=True)
+    src.add_argument("--file", default=None,
+                     help="read Python source from a file (preferred)")
+    src.add_argument("--stdin", action="store_true",
+                     help="read Python source from stdin")
+    src.add_argument("--source", "-c", default=None,
+                     help="small inline Python source (avoid giant shell-quoted strings)")
+    e.add_argument("--label", default=None,
+                   help="optional human-readable task label (<=256 chars)")
+    e.add_argument("--timeout", default=None, type=float,
+                   help="seconds to wait for a result (default: script bound)")
+
     sub.add_parser("gen-token", help="print a random high-entropy hex token")
     return p
 
@@ -200,6 +247,7 @@ COMMANDS = {
     "delete": cmd_delete,
     "save": cmd_save,
     "render": cmd_render,
+    "exec": cmd_exec,
     "gen-token": cmd_gen_token,
 }
 

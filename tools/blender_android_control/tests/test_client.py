@@ -206,6 +206,7 @@ class McpValidationTests(unittest.TestCase):
 
     def _load_logic(self):
         import importlib.util
+        import re
         path = os.path.join(os.path.dirname(__file__), "..", "mcp_server.py")
         with open(path, "r", encoding="utf-8") as f:
             src = f.read()
@@ -213,7 +214,10 @@ class McpValidationTests(unittest.TestCase):
         # replicate _check_vec3 contract from source text.
         self.assertIn("ALLOWED_CREATE_TYPES", src)
         self.assertIn("blender_object_create", src)
-        self.assertIn("execute_python", src)  # must only appear in the "no" docstring
+        self.assertIn("blender_bpy_execute", src)  # the one trusted exec tool
+        # No generic shell tool definition (the docstring may name the
+        # forbidden shape; what matters is no such tool exists).
+        self.assertEqual(re.findall(r"^def (\w*shell\w*)\(", src, re.M), [])
         self.assertNotIn("subprocess", src)
         return src
 
@@ -224,6 +228,7 @@ class McpValidationTests(unittest.TestCase):
             src = f.read()
         tools = re.findall(r"^def (blender_\w+)\(", src, re.M)
         self.assertEqual(sorted(tools), [
+            "blender_bpy_execute",
             "blender_object_create",
             "blender_object_delete",
             "blender_object_transform",
@@ -232,6 +237,8 @@ class McpValidationTests(unittest.TestCase):
             "blender_scene_inspect",
             "blender_scene_save",
         ])
+        # The broad tool exists exactly once.
+        self.assertEqual(len(re.findall(r"^def blender_bpy_execute\(", src, re.M)), 1)
 
     def test_vec3_contract(self):
         # Mirror of mcp_server._check_vec3 (kept in sync by test_no_generic...).

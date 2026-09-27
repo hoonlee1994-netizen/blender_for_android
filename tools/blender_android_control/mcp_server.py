@@ -7,8 +7,19 @@
 
 Each tool validates its arguments and then calls the same
 :class:`BlenderControlClient` used by ``blenderctl``. No Blender-specific
-business logic lives here, and there is intentionally no generic
-``execute_python`` or shell tool.
+business logic lives here.
+
+Besides the seven deterministic semantic tools there is exactly one broad
+trusted-execution tool, ``blender_bpy_execute``, for the long tail of
+Blender functionality. It requires ``allow_script_execution:true`` in the
+Blender-side control config; otherwise the bridge answers FORBIDDEN while
+the semantic tools keep working.
+
+TRUST MODEL: enabling script execution grants the authenticated local
+controller trusted Python execution inside Blender's process, with the same
+operating-system access available to Blender's bundled Python runtime.
+There is intentionally no ``execute_shell`` or other generic host-command
+tool in this server.
 
 Requires the official MCP Python SDK v1 API (``mcp<2``, FastMCP)::
 
@@ -153,6 +164,28 @@ def blender_render_still(output: str, engine: str = "BLENDER_EEVEE",
     return _wrap(c.render_still, output, engine=engine,
                  resolution_x=resolution_x, resolution_y=resolution_y,
                  percentage=percentage)
+
+
+@server.tool()
+def blender_bpy_execute(source: str, label: str = "") -> dict:
+    """Run trusted bpy Python source on Blender's main thread.
+
+    The script executes via the ``script.execute`` RPC on the same
+    main-thread queue as the semantic tools and may assign a top-level
+    ``result`` variable holding JSON-serializable data. Requires
+    ``allow_script_execution:true`` in the Blender-side control config.
+    Prefer the deterministic semantic tools for common operations; use this
+    for the long tail of Blender functionality. Prefer Blender data APIs
+    over UI-context-sensitive ``bpy.ops``; no GUI automation is available.
+    """
+    if not isinstance(source, str) or not source:
+        return {"ok": False, "error": {"code": "INVALID_PARAMS",
+                                       "message": "source (non-empty string) is required"}}
+    if label is not None and (not isinstance(label, str) or len(label) > 256):
+        return {"ok": False, "error": {"code": "INVALID_PARAMS",
+                                       "message": "label must be a string of at most 256 characters"}}
+    c = _client()
+    return _wrap(c.script_execute, source, label=label or None)
 
 
 def main():

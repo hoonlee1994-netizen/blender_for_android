@@ -24,6 +24,9 @@ DEFAULT_PORT = 17878
 DEFAULT_CONNECT_TIMEOUT = 5.0
 DEFAULT_READ_TIMEOUT = 30.0
 RENDER_READ_TIMEOUT = 200.0
+# Upper bound for waiting on trusted script execution (server allows 300s;
+# callers may pass an explicit shorter timeout per call).
+SCRIPT_READ_TIMEOUT = 330.0
 MAX_RESPONSE_BYTES = 1024 * 1024
 
 ENV_HOST = "BLENDER_CONTROL_HOST"
@@ -191,3 +194,18 @@ class BlenderControlClient:
             "resolution_x": resolution_x, "resolution_y": resolution_y,
             "percentage": percentage,
         }, timeout=RENDER_READ_TIMEOUT)
+
+    def script_execute(self, source, label=None, timeout=None):
+        """Execute trusted Python source on Blender's main thread.
+
+        Thin transport wrapper: validation and execution happen
+        Blender-side. ``timeout`` defaults to SCRIPT_READ_TIMEOUT; pass a
+        smaller value to stop waiting earlier (the script may still run to
+        completion inside Blender -- timeout is not cancellation).
+        """
+        params = {"source": source}
+        if label is not None:
+            params["label"] = label
+        if timeout is None:
+            timeout = SCRIPT_READ_TIMEOUT
+        return self.request("script.execute", params, timeout=timeout)
