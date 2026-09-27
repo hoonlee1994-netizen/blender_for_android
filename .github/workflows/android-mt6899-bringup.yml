@@ -228,11 +228,38 @@ jobs:
 
       - name: Populate native Linux host precompiled libraries (host codegen)
         run: |
-          python3 build_files/utils/make_update.py --no-blender --architecture x86_64
-          test -d lib/linux_x64 || { echo "::error::lib/linux_x64 missing after make_update"; exit 1; }
-          test -n "$(ls -A lib/linux_x64)" || { echo "::error::lib/linux_x64 is empty after make_update"; exit 1; }
+          set -euo pipefail
+          # make_update.py cannot work in this fork: .gitmodules declares
+          # lib/linux_x64 but the parent commit carries no gitlink, so
+          # `git submodule update --init lib/linux_x64` fails with
+          # "pathspec 'lib/linux_x64' did not match". Clone the authoritative
+          # checkout directly (CI-local only; not a tracked gitlink,
+          # .gitmodules untouched, nothing committed).
+          HOST_LIB_PATH="$(git config --file .gitmodules --get 'submodule.lib/linux_x64.path')"
+          HOST_LIB_URL="$(git config --file .gitmodules --get 'submodule.lib/linux_x64.url')"
+          HOST_LIB_BRANCH="$(git config --file .gitmodules --get 'submodule.lib/linux_x64.branch')"
+          echo "HOST_LIB_PATH=$HOST_LIB_PATH"
+          echo "HOST_LIB_URL=$HOST_LIB_URL"
+          echo "HOST_LIB_BRANCH=$HOST_LIB_BRANCH"
+          test "$HOST_LIB_PATH" = "lib/linux_x64" || { echo "::error::Unexpected host lib path: $HOST_LIB_PATH"; exit 1; }
+          test -n "$HOST_LIB_URL" || { echo "::error::Empty host lib URL from .gitmodules"; exit 1; }
+          test -n "$HOST_LIB_BRANCH" || { echo "::error::Empty host lib branch from .gitmodules"; exit 1; }
+          rm -rf "$HOST_LIB_PATH"
+          GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --branch "$HOST_LIB_BRANCH" "$HOST_LIB_URL" "$HOST_LIB_PATH"
+          git -C "$HOST_LIB_PATH" lfs pull
+          test -d lib/linux_x64 || { echo "::error::lib/linux_x64 missing after clone"; exit 1; }
+          test -n "$(ls -A lib/linux_x64)" || { echo "::error::lib/linux_x64 is empty after clone"; exit 1; }
+          echo "Host precompiled bundle layout:"; ls lib/linux_x64 | head -n 30
+          test "$(ls lib/linux_x64 | wc -l)" -ge 3 || { echo "::error::lib/linux_x64 layout too sparse to be a genuine host bundle"; exit 1; }
+          # Stop on pointer-only LFS materialization instead of failing later at JPEG.
+          POINTERS="$(grep -rl --max-count=1 '^version https://git-lfs.github.com/spec/v1' lib/linux_x64 2>/dev/null | head -n 5 || true)"
+          if [ -n "$POINTERS" ]; then
+            echo "::error::LFS pointer-only files remain unmaterialized:"
+            echo "$POINTERS"
+            exit 1
+          fi
           find lib/linux_x64 -maxdepth 4 -name jpeglib.h | grep -q . || { echo "::error::host JPEG include (jpeglib.h) not found under lib/linux_x64"; exit 1; }
-          echo "Host precompiled bundle OK:"; ls lib/linux_x64 | head -n 30
+          echo "Host precompiled bundle OK:"; find lib/linux_x64 -maxdepth 4 -name jpeglib.h
 
       - name: Verify effective NDK 28.2.13676358 + toolchain file
         run: |
