@@ -94,6 +94,19 @@ public class BlenderActivity extends NativeActivity {
 
     inputView = new InputView(this);
     addContentView(inputView, new ViewGroup.LayoutParams(1, 1));
+
+    /* Unattended control keep-alive (Level 1): same process, foreground
+     * priority only. Starts here (foreground context, so FGS launch
+     * restrictions are satisfied) and only when the localhost control plane
+     * is explicitly enabled; otherwise no service, no residency. */
+    BlenderControlService.startIfControlEnabled(this);
+  }
+
+  @Override
+  protected void onDestroy() {
+    /* Clean stop with Blender/control mode; safe when never started. */
+    BlenderControlService.stop(this);
+    super.onDestroy();
   }
 
   /* Scoped storage confines the app to its sandbox, but Blender opens and saves

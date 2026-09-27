@@ -242,11 +242,11 @@ echo "[apk] runtime payload: $(du -sh "$ASSETS/blender_runtime.zip" | cut -f1)"
 sha256sum "$ASSETS/blender_runtime.zip" | cut -c1-16 > "$ASSETS/blender_runtime.rev"
 echo "[apk] runtime revision: $(cat "$ASSETS/blender_runtime.rev")"
 
-echo "[apk] compiling BlenderActivity"
+echo "[apk] compiling Blender java sources (Activity + control keep-alive service)"
 mkdir -p "$STAGE/javac" "$STAGE/dex"
 "$JAVA_HOME/bin/javac" -classpath "$ANDROID_JAR" -source 17 -target 17 \
   -d "$STAGE/javac" \
-  "$SCRIPT_DIR/app/src/main/java/org/blender/blender/BlenderActivity.java"
+  "$SCRIPT_DIR"/app/src/main/java/org/blender/blender/*.java
 "$BT/d8" --min-api "$ANDROID_API" --output "$STAGE/dex" \
   $(find "$STAGE/javac" -name '*.class')
 

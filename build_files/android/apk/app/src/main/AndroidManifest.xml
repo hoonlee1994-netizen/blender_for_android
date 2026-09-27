@@ -22,6 +22,15 @@
          access to shared storage rather than the scoped, app-private sandbox. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
+    <!-- Unattended control/render keep-alive (UNATTENDED v1, Level 1):
+         keeps the existing single Blender process scheduled while the Activity
+         is backgrounded. Normal foreground-service semantics; the GUI is NOT
+         kept foregrounded. No wake lock, no battery exemption in v1. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Needed on API 33+ for the persistent foreground-service notification. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:label="Blender"
         android:icon="@drawable/ic_launcher"
@@ -156,5 +165,19 @@
                     android:mimeType="*/*" android:pathPrefix="/external_primary/downloads" />
             </intent-filter>
         </activity>
+
+        <!-- Unattended keep-alive: same process (no android:process), not
+             exported, holds no Blender runtime itself. Started explicitly by
+             BlenderActivity only when the localhost control plane is enabled;
+             stopped when Blender/control mode stops. -->
+        <service
+            android:name="org.blender.blender.BlenderControlService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-enabled local Blender computation and rendering controlled through the app's localhost control interface." />
+        </service>
     </application>
 </manifest>
